@@ -72,7 +72,7 @@ if [[ "$platform" != "iPhoneOS" ]]; then
   echo "The archive is not a physical-device iOS build (platform: $platform)." >&2
   exit 1
 fi
-xcrun lipo -verify_arch arm64 "$app_path/$executable"
+xcrun lipo "$app_path/$executable" -verify_arch arm64
 
 mkdir -p "$work_dir/package/Payload"
 /usr/bin/ditto --norsrc --noextattr "$app_path" "$work_dir/package/Payload/Penny.app"
