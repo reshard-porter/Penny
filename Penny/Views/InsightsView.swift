@@ -128,34 +128,58 @@ struct CategoryDonutCard: View {
     let currency: CurrencyCode
     @State private var selectedAngle: Double?
 
-    private func category(at angle: Double?) -> LedgerCategory? {
+    /// The six largest categories plus one slice for everything else, so tiny slices don't splinter the ring.
+    private struct Slice: Identifiable, Equatable {
+        let id: String
+        let label: String
+        let symbol: String
+        let color: Color
+        let cents: Int
+    }
+
+    private var slices: [Slice] {
+        let ranked = summary.rankedCategories
+        var result = ranked.prefix(6).map { category in
+            Slice(id: category.rawValue, label: category.label, symbol: category.symbol,
+                  color: category.color, cents: summary.spent(category))
+        }
+        let rest = ranked.dropFirst(6).reduce(0) { $0 + summary.spent($1) }
+        if rest > 0 {
+            let count = ranked.count - 6
+            result.append(Slice(id: "rest", label: "\(count) more", symbol: "ellipsis.circle.fill",
+                                color: Palette.faint, cents: rest))
+        }
+        return result
+    }
+
+    private func slice(at angle: Double?, in slices: [Slice]) -> Slice? {
         guard let angle else { return nil }
         var running = 0.0
-        for category in summary.rankedCategories {
-            running += Double(summary.spent(category)) / 100
-            if angle <= running { return category }
+        for slice in slices {
+            running += Double(slice.cents) / 100
+            if angle <= running { return slice }
         }
         return nil
     }
 
     var body: some View {
-        let categories = summary.rankedCategories
-        let selected = category(at: selectedAngle)
+        let slices = self.slices
+        let selected = slice(at: selectedAngle, in: slices)
         VStack(alignment: .leading, spacing: 16) {
             SectionHeader(title: "Spending mix", subtitle: "Touch the ring to explore")
-            if categories.isEmpty {
+            if slices.isEmpty {
                 Text("No expenses this month yet.").font(.subheadline).foregroundStyle(Palette.muted)
             } else {
-                Chart(categories) { category in
-                    SectorMark(angle: .value("Spent", Double(summary.spent(category)) / 100),
+                Chart(slices) { slice in
+                    SectorMark(angle: .value("Spent", Double(slice.cents) / 100),
                                innerRadius: .ratio(0.64),
-                               outerRadius: .ratio(selected == category ? 1 : 0.92),
-                               angularInset: 2)
-                        .cornerRadius(6)
-                        .foregroundStyle(Gradients.tint(category.color))
-                        .opacity(selected == nil || selected == category ? 1 : 0.35)
-                        .accessibilityLabel(Text(category.label))
-                        .accessibilityValue(Text(Money.format(summary.spent(category), currency: currency)))
+                               outerRadius: .ratio(selected == slice ? 1 : 0.93),
+                               angularInset: 1.5)
+                        .cornerRadius(4)
+                        .foregroundStyle(Gradients.tint(slice.color))
+                        .opacity(selected == nil || selected == slice ? 1 : 0.35)
+                        .accessibilityLabel(Text(slice.label))
+                        .accessibilityValue(Text(Money.format(slice.cents, currency: currency)))
                 }
                 .chartAngleSelection(value: $selectedAngle)
                 .chartBackground { _ in
@@ -163,14 +187,14 @@ struct CategoryDonutCard: View {
                         if let selected {
                             Image(systemName: selected.symbol).foregroundStyle(selected.color)
                             Text(selected.label).font(.caption.weight(.semibold)).foregroundStyle(Palette.muted)
-                            Text(Money.short(summary.spent(selected), currency: currency))
+                            Text(Money.short(selected.cents, currency: currency))
                                 .font(Typography.money(20, weight: .heavy)).foregroundStyle(Palette.ink)
-                            Text("\(share(selected))% of spending").font(.caption2).foregroundStyle(Palette.muted)
+                            Text("\(share(selected.cents))% of spending").font(.caption2).foregroundStyle(Palette.muted)
                         } else {
                             Text("Total").font(.caption.weight(.semibold)).foregroundStyle(Palette.muted)
                             Text(Money.short(summary.expenses, currency: currency))
                                 .font(Typography.money(22, weight: .heavy)).foregroundStyle(Palette.ink)
-                            Text("\(categories.count) categories").font(.caption2).foregroundStyle(Palette.muted)
+                            Text("\(summary.rankedCategories.count) categories").font(.caption2).foregroundStyle(Palette.muted)
                         }
                     }
                 }
@@ -178,12 +202,12 @@ struct CategoryDonutCard: View {
                 .animation(.snappy, value: selected)
 
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 10) {
-                    ForEach(categories) { category in
+                    ForEach(slices) { slice in
                         HStack(spacing: 8) {
-                            Circle().fill(category.color).frame(width: 9, height: 9)
-                            Text(category.label).font(.caption).foregroundStyle(Palette.ink).lineLimit(1)
+                            Circle().fill(slice.color).frame(width: 9, height: 9)
+                            Text(slice.label).font(.caption).foregroundStyle(Palette.ink).lineLimit(1)
                             Spacer(minLength: 2)
-                            Text("\(share(category))%").font(.caption.weight(.semibold).monospacedDigit())
+                            Text("\(share(slice.cents))%").font(.caption.weight(.semibold).monospacedDigit())
                                 .foregroundStyle(Palette.muted)
                         }
                         .accessibilityElement(children: .combine)
@@ -194,9 +218,9 @@ struct CategoryDonutCard: View {
         .card()
     }
 
-    private func share(_ category: LedgerCategory) -> Int {
+    private func share(_ cents: Int) -> Int {
         guard summary.expenses > 0 else { return 0 }
-        return Int((Double(summary.spent(category)) * 100 / Double(summary.expenses)).rounded())
+        return Int((Double(cents) * 100 / Double(summary.expenses)).rounded())
     }
 }
 
@@ -524,7 +548,9 @@ struct CommitmentsCard: View {
             HStack(alignment: .firstTextBaseline) {
                 Text(Money.short(monthly, currency: currency))
                     .font(Typography.money(30, weight: .heavy)).foregroundStyle(Palette.ink)
+                    .lineLimit(1).minimumScaleFactor(0.6)
                 Text("/ month").font(.subheadline).foregroundStyle(Palette.muted)
+                    .fixedSize()
                 Spacer()
                 if let share {
                     Text("\(Int((share * 100).rounded()))% of income")

@@ -197,7 +197,11 @@ struct BudgetHero: View {
                          isCurrent ? Money.short(perDay, currency: currency)
                                    : Money.short(summary.expenses / max(elapsed, 1), currency: currency))
                 Spacer()
-                heroStat("Recurring", Money.short(summary.recurringExpenses, currency: currency))
+                if isCurrent {
+                    heroStat("Spent today", Money.short(summary.spent(on: Date()), currency: currency))
+                } else {
+                    heroStat("Net", Money.short(summary.net, currency: currency))
+                }
                 Spacer()
                 Button {
                     Haptics.tap()
