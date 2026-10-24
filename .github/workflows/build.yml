@@ -1,0 +1,97 @@
+name: Build & Test
+
+# Compiles Penny with the latest Xcode, runs the unit tests in the iOS Simulator,
+# builds a Release archive for real iPhones and attaches an unsigned .ipa
+# (for re-signing with Sideloadly/AltStore). Add "[screenshots]" to a commit
+# message to also capture simulator screenshots into docs/screenshots.
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select latest Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Toolchain
+        run: |
+          xcodebuild -version
+          xcrun simctl list runtimes
+
+      - name: Pick a simulator
+        id: sim
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 scripts/pick-simulator.py)
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+
+      - name: Build and run unit tests
+        run: |
+          set -o pipefail
+          mkdir -p build
+          xcodebuild test \
+            -project Penny.xcodeproj -scheme Penny \
+            -destination "id=${{ steps.sim.outputs.udid }}" \
+            -derivedDataPath build/DerivedData \
+            2>&1 | tee build/test.log | xcbeautify --renderer github-actions
+
+      - name: Archive for iPhone (Release, unsigned)
+        run: |
+          set -o pipefail
+          xcodebuild archive \
+            -project Penny.xcodeproj -scheme Penny -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/Penny.xcarchive \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            2>&1 | tee build/archive.log | xcbeautify --renderer github-actions
+          mkdir -p build/ipa/Payload
+          cp -R build/Penny.xcarchive/Products/Applications/Penny.app build/ipa/Payload/
+          (cd build/ipa && zip -qry ../Penny-unsigned.ipa Payload)
+          ls -lh build/Penny-unsigned.ipa
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Penny-unsigned-ipa
+          path: build/Penny-unsigned.ipa
+          retention-days: 14
+
+      - name: Summarize errors
+        if: failure()
+        run: |
+          for log in build/test.log build/archive.log; do
+            [ -f "$log" ] || continue
+            echo "== $log"
+            grep -E "error:|: error|fatal error|Testing failed|✘|failed" "$log" | grep -v "^note:" | sort -u | head -80 || true
+            grep -E "error:" "$log" | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done || true
+          done
+
+      - name: Capture screenshots
+        if: contains(github.event.head_commit.message, '[screenshots]')
+        run: |
+          APP=$(find build/DerivedData/Build/Products -maxdepth 2 -name Penny.app -path '*iphonesimulator*' | head -1)
+          bash scripts/take-screenshots.sh "${{ steps.sim.outputs.udid }}" "$APP" docs/screenshots
+
+      - name: Commit screenshots
+        if: contains(github.event.head_commit.message, '[screenshots]') && github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/screenshots
+          git commit -m "Update screenshots [skip ci]" || exit 0
+          git push
