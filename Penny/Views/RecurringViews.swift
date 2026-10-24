@@ -11,65 +11,106 @@ struct RecurringListView: View {
     private var currency: CurrencyCode { CurrencyCode(rawValue: currencyRaw) ?? .usd }
 
     var body: some View {
+        let active = rules.filter(\.isActive)
+        let monthlyOut = active.filter { $0.kind == .expense }.reduce(0) { $0 + $1.monthlyCents }
+        let monthlyIn = active.filter { $0.kind == .income }.reduce(0) { $0 + $1.monthlyCents }
+        let sorted = rules.sorted { lhs, rhs in
+            if lhs.isActive != rhs.isActive { return lhs.isActive }
+            return lhs.nextDate < rhs.nextDate
+        }
+
         List {
-            if rules.isEmpty {
-                ContentUnavailableView {
-                    Label("No recurring transactions", systemImage: "repeat")
-                } description: {
-                    Text("Add rent, salary or subscriptions once and Penny records them on schedule.")
-                } actions: {
-                    Button("Add recurring transaction") { editing = .new }
-                }
-                .listRowBackground(Color.clear)
-            }
-            ForEach(rules) { rule in
-                Button { editing = .edit(rule) } label: { row(rule) }
-                    .buttonStyle(.plain)
-                    .swipeActions {
-                        Button(role: .destructive) {
-                            context.delete(rule)
-                            try? context.save()
-                            state.show("Recurring transaction removed. Past entries were kept.")
-                        } label: {
-                            Label("Delete", systemImage: "trash")
+            if !rules.isEmpty {
+                Section {
+                    HStack(spacing: 0) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Eyebrow(text: "Fixed costs / month")
+                            Text(Money.short(monthlyOut, currency: currency))
+                                .font(Typography.money(30, weight: .heavy)).foregroundStyle(.white)
                         }
-                        Button {
-                            rule.isActive.toggle()
-                            try? context.save()
-                            if rule.isActive { RecurringEngine.run(context: context) }
-                        } label: {
-                            Label(rule.isActive ? "Pause" : "Resume",
-                                  systemImage: rule.isActive ? "pause" : "play")
+                        Spacer()
+                        VStack(alignment: .trailing, spacing: 4) {
+                            Eyebrow(text: "Recurring income")
+                            Text(Money.short(monthlyIn, currency: currency))
+                                .font(Typography.money(20, weight: .bold)).foregroundStyle(Palette.lime)
                         }
-                        .tint(Palette.blue)
                     }
+                    .heroCard(padding: 20, radius: 24)
+                    .listRowInsets(EdgeInsets())
+                    .listRowBackground(Color.clear)
+                }
+            }
+
+            if rules.isEmpty {
+                Section {
+                    EmptyStateCard(symbol: "repeat", title: "Nothing on repeat",
+                                   message: "Add rent, salary or subscriptions once and Penny records them on schedule.",
+                                   actionTitle: "Add recurring") { editing = .new }
+                        .listRowBackground(Color.clear)
+                }
+            }
+
+            Section {
+                ForEach(sorted) { rule in
+                    Button { editing = .edit(rule) } label: { row(rule) }
+                        .buttonStyle(.plain)
+                        .listRowBackground(Palette.surface)
+                        .swipeActions {
+                            Button(role: .destructive) {
+                                context.delete(rule)
+                                try? context.save()
+                                state.show("Recurring transaction removed. Past entries were kept.", symbol: "trash.fill")
+                            } label: {
+                                Label("Delete", systemImage: "trash")
+                            }
+                            Button {
+                                rule.isActive.toggle()
+                                try? context.save()
+                                if rule.isActive { RecurringEngine.run(context: context) }
+                                Haptics.tap()
+                            } label: {
+                                Label(rule.isActive ? "Pause" : "Resume",
+                                      systemImage: rule.isActive ? "pause.fill" : "play.fill")
+                            }
+                            .tint(Palette.blue)
+                        }
+                }
+            } footer: {
+                if !rules.isEmpty {
+                    Text("Penny records due entries when you open the app. Swipe to pause or delete.")
+                }
             }
         }
+        .listStyle(.insetGrouped)
+        .scrollContentBackground(.hidden)
+        .pennyBackground()
         .navigationTitle("Recurring")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button { editing = .new } label: { Label("Add", systemImage: "plus") }
+                Button { editing = .new } label: { Label("Add", systemImage: "plus.circle.fill") }
             }
         }
         .sheet(item: $editing) { target in RuleFormView(target: target) }
     }
 
     private func row(_ rule: RecurringRule) -> some View {
-        HStack(spacing: 12) {
-            CategoryBadge(category: rule.category)
+        HStack(spacing: 14) {
+            CategoryBadge(category: rule.category, size: 44)
+                .saturation(rule.isActive ? 1 : 0)
             VStack(alignment: .leading, spacing: 3) {
-                Text(rule.title).font(.body.weight(.semibold)).foregroundStyle(Palette.ink)
+                Text(rule.title).font(.body.weight(.semibold)).foregroundStyle(Palette.ink).lineLimit(1)
                 Text(rule.isActive
-                     ? "\(rule.frequency.label) · next \(DateText.long(rule.nextDate))"
+                     ? "\(rule.frequency.shortLabel) · next \(DateText.dueText(rule.nextDate))"
                      : "Paused")
                     .font(.footnote).foregroundStyle(Palette.muted)
             }
             Spacer()
-            Text((rule.kind == .income ? "+" : "−") + Money.format(rule.amountCents, currency: currency))
-                .font(.body.weight(.bold).monospacedDigit())
+            Text(Money.signed(rule.amountCents, kind: rule.kind, currency: currency))
+                .font(Typography.money(16, weight: .bold))
                 .foregroundStyle(rule.kind == .income ? Palette.green : Palette.ink)
         }
-        .opacity(rule.isActive ? 1 : 0.55)
+        .padding(.vertical, 4)
+        .opacity(rule.isActive ? 1 : 0.6)
         .contentShape(Rectangle())
         .accessibilityElement(children: .combine)
     }
@@ -104,6 +145,7 @@ struct RuleFormView: View {
     @State private var note = ""
     @State private var isActive = true
     @State private var showErrors = false
+    @State private var confirmDelete = false
     @State private var loaded = false
 
     private var existing: RecurringRule? {
@@ -120,11 +162,9 @@ struct RuleFormView: View {
         NavigationStack {
             Form {
                 Section {
-                    Picker("Type", selection: $kind) {
-                        Text("Expense").tag(EntryKind.expense)
-                        Text("Income").tag(EntryKind.income)
-                    }
-                    .pickerStyle(.segmented)
+                    PillPicker(options: [(EntryKind.expense, "Expense"), (EntryKind.income, "Income")], selection: $kind)
+                        .listRowBackground(Color.clear)
+                        .listRowInsets(EdgeInsets())
                 }
 
                 Section {
@@ -132,15 +172,13 @@ struct RuleFormView: View {
                         Text(currency.symbol).font(.title2.weight(.bold)).foregroundStyle(Palette.muted)
                         TextField("0.00", text: $amountText)
                             .keyboardType(.decimalPad)
-                            .font(.title.weight(.heavy).monospacedDigit())
+                            .font(Typography.money(30, weight: .heavy))
                             .accessibilityLabel("Amount")
                     }
                     TextField("Description, e.g. Apartment rent", text: $title)
-                    if kind == .expense {
-                        Picker("Category", selection: $category) {
-                            ForEach(LedgerCategory.expenseCases) { option in
-                                Label(option.label, systemImage: option.symbol).tag(option)
-                            }
+                    Picker("Category", selection: $category) {
+                        ForEach(LedgerCategory.cases(for: kind)) { option in
+                            Label(option.label, systemImage: option.symbol).tag(option)
                         }
                     }
                     if showErrors && !isValid {
@@ -158,6 +196,10 @@ struct RuleFormView: View {
                     if existing != nil {
                         Toggle("Active", isOn: $isActive)
                     }
+                    if let cents, frequency != .monthly {
+                        LabeledContent("About per month",
+                                       value: Money.format(Int((Double(cents) * frequency.perMonth).rounded()), currency: currency))
+                    }
                 } footer: {
                     if let rule = existing {
                         Text("Changes apply to future entries. \(rule.generatedCount) already recorded \(rule.generatedCount == 1 ? "stays" : "stay") as they are.")
@@ -170,6 +212,12 @@ struct RuleFormView: View {
                     TextField("Anything you’d like to remember", text: $note, axis: .vertical)
                         .lineLimit(1...4)
                 }
+
+                if existing != nil {
+                    Section {
+                        Button("Delete recurring transaction", role: .destructive) { confirmDelete = true }
+                    }
+                }
             }
             .navigationTitle(existing == nil ? "New recurring" : "Edit recurring")
             .navigationBarTitleDisplayMode(.inline)
@@ -178,17 +226,34 @@ struct RuleFormView: View {
                 ToolbarItem(placement: .confirmationAction) { Button("Save", action: save).fontWeight(.bold) }
             }
             .onAppear(perform: load)
+            .onChange(of: kind) { _, newKind in
+                if !LedgerCategory.cases(for: newKind).contains(category) {
+                    category = newKind == .income ? .income : .bills
+                }
+            }
+            .confirmationDialog("Delete this recurring transaction?", isPresented: $confirmDelete,
+                                titleVisibility: .visible) {
+                Button("Delete", role: .destructive) {
+                    if let rule = existing {
+                        context.delete(rule)
+                        try? context.save()
+                        state.show("Recurring transaction removed. Past entries were kept.", symbol: "trash.fill")
+                    }
+                    dismiss()
+                }
+            }
         }
         .lockGuard()
     }
 
     private func load() {
-        guard !loaded, let rule = existing else { return }
+        guard !loaded else { return }
         loaded = true
+        guard let rule = existing else { return }
         kind = rule.kind
         amountText = Money.inputText(rule.amountCents)
         title = rule.title
-        category = rule.kind == .income ? .bills : rule.category
+        category = rule.category
         frequency = rule.frequency
         startDate = rule.startDate
         note = rule.note
@@ -198,9 +263,10 @@ struct RuleFormView: View {
     private func save() {
         guard isValid, let cents else {
             showErrors = true
+            Haptics.warning()
             return
         }
-        let finalCategory: LedgerCategory = kind == .income ? .income : category
+        let finalCategory = LedgerCategory.normalized(category, for: kind)
         let cleanNote = note.trimmingCharacters(in: .whitespacesAndNewlines)
         if let rule = existing {
             rule.title = trimmedTitle
@@ -215,15 +281,17 @@ struct RuleFormView: View {
                 rule.frequency = frequency
             }
             rule.isActive = isActive
+            rule.isSample = false
             state.show("Recurring transaction updated.")
         } else {
             context.insert(RecurringRule(title: trimmedTitle, amountCents: cents, kind: kind,
                                          category: finalCategory, note: cleanNote,
                                          frequency: frequency, startDate: startDate))
-            state.show("Recurring transaction added.")
+            state.show("Recurring transaction added.", symbol: "repeat")
         }
         try? context.save()
         RecurringEngine.run(context: context)
+        Haptics.success()
         dismiss()
     }
 }

@@ -1,12 +1,19 @@
 name: Build & Test
 
-# Compiles Penny with the latest Xcode, runs the unit tests in the iOS Simulator,
-# builds a Release archive for real iPhones and attaches an unsigned .ipa
-# (for re-signing with Sideloadly/AltStore). Add "[screenshots]" to a commit
-# message to also capture simulator screenshots into docs/screenshots.
+# Compiles Penny with the latest stable Xcode, runs the unit tests in the iOS
+# Simulator and builds a Release archive for real iPhones.
+#
+# Outputs
+# - "Penny-unsigned-ipa" workflow artifact, and on pushes the rolling
+#   "latest-build" pre-release with Penny-unsigned.ipa attached (re-sign it with
+#   Sideloadly / AltStore, or see scripts/make-signed-ipa.sh for a signed build).
+# - The "ci-logs" branch: build/test summary of the latest run, and simulator
+#   screenshots when the commit message contains "[screenshots]".
 
 on:
   push:
+    branches-ignore: [ci-logs]
+    tags-ignore: ['**']
   pull_request:
   workflow_dispatch:
 
@@ -20,7 +27,7 @@ concurrency:
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v4
 
@@ -31,8 +38,8 @@ jobs:
 
       - name: Toolchain
         run: |
-          xcodebuild -version
-          xcrun simctl list runtimes
+          mkdir -p build
+          { xcodebuild -version; swift --version; xcrun simctl list runtimes; } 2>&1 | tee build/toolchain.txt
 
       - name: Pick a simulator
         id: sim
@@ -41,16 +48,18 @@ jobs:
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
 
       - name: Build and run unit tests
+        id: test
         run: |
           set -o pipefail
-          mkdir -p build
           xcodebuild test \
             -project Penny.xcodeproj -scheme Penny \
             -destination "id=${{ steps.sim.outputs.udid }}" \
             -derivedDataPath build/DerivedData \
+            -resultBundlePath build/Tests.xcresult \
             2>&1 | tee build/test.log | xcbeautify --renderer github-actions
 
       - name: Archive for iPhone (Release, unsigned)
+        id: archive
         run: |
           set -o pipefail
           xcodebuild archive \
@@ -69,29 +78,66 @@ jobs:
         with:
           name: Penny-unsigned-ipa
           path: build/Penny-unsigned.ipa
-          retention-days: 14
+          retention-days: 30
 
-      - name: Summarize errors
-        if: failure()
+      - name: Publish rolling pre-release
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          for log in build/test.log build/archive.log; do
-            [ -f "$log" ] || continue
-            echo "== $log"
-            grep -E "error:|: error|fatal error|Testing failed|✘|failed" "$log" | grep -v "^note:" | sort -u | head -80 || true
-            grep -E "error:" "$log" | sort -u | head -40 | while IFS= read -r line; do echo "::error::$line"; done || true
-          done
+          gh release delete latest-build --cleanup-tag --yes || true
+          git push origin :refs/tags/latest-build || true
+          gh release create latest-build build/Penny-unsigned.ipa \
+            --target "$GITHUB_SHA" --prerelease \
+            --title "Penny – latest build (${GITHUB_SHA::7})" \
+            --notes "Unsigned build of ${GITHUB_REF_NAME} @ ${GITHUB_SHA::7}. Install it with Sideloadly or AltStore (they sign it with your Apple ID), or build a signed IPA on your Mac with scripts/make-signed-ipa.sh."
 
       - name: Capture screenshots
-        if: contains(github.event.head_commit.message, '[screenshots]')
+        if: success() && contains(github.event.head_commit.message, '[screenshots]')
         run: |
           APP=$(find build/DerivedData/Build/Products -maxdepth 2 -name Penny.app -path '*iphonesimulator*' | head -1)
-          bash scripts/take-screenshots.sh "${{ steps.sim.outputs.udid }}" "$APP" docs/screenshots
+          bash scripts/take-screenshots.sh "${{ steps.sim.outputs.udid }}" "$APP" build/screenshots
 
-      - name: Commit screenshots
-        if: contains(github.event.head_commit.message, '[screenshots]') && github.event_name == 'push'
+      - name: Write summary
+        if: always()
         run: |
+          mkdir -p build
+          S=build/summary.txt
+          {
+            echo "commit: $GITHUB_SHA"
+            echo "ref: $GITHUB_REF_NAME"
+            echo "test: ${{ steps.test.outcome }}"
+            echo "archive: ${{ steps.archive.outcome }}"
+            echo
+            head -3 build/toolchain.txt 2>/dev/null || true
+            for log in build/test.log build/archive.log; do
+              [ -f "$log" ] || continue
+              echo
+              echo "===== errors in $log"
+              grep -E "error:|fatal error" "$log" | sort -u | head -150 || true
+              echo
+              echo "===== warnings in $log (Penny sources)"
+              grep -E "/Penny(Tests)?/.*warning:" "$log" | sort -u | head -80 || true
+              echo
+              echo "===== test results in $log"
+              grep -E "✔|✘|Test run with|passed after|failed after|Executed [0-9]+ test|\*\* TEST" "$log" | tail -80 || true
+            done
+          } > "$S"
+          cat "$S"
+
+      - name: Push logs and screenshots to ci-logs branch
+        if: always() && github.event_name == 'push'
+        run: |
+          rm -rf /tmp/ci-logs && mkdir -p /tmp/ci-logs
+          cp build/summary.txt /tmp/ci-logs/ 2>/dev/null || true
+          for log in build/test.log build/archive.log; do
+            [ -f "$log" ] && tail -c 400000 "$log" > "/tmp/ci-logs/$(basename "$log")"
+          done
+          [ -d build/screenshots ] && cp -R build/screenshots /tmp/ci-logs/screenshots
+          cd /tmp/ci-logs
+          git init -q -b ci-logs
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/screenshots
-          git commit -m "Update screenshots [skip ci]" || exit 0
-          git push
+          git add -A
+          git commit -qm "CI logs for ${GITHUB_SHA::7} [skip ci]"
+          git push -qf "https://x-access-token:${{ github.token }}@github.com/${GITHUB_REPOSITORY}.git" HEAD:refs/heads/ci-logs

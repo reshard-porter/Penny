@@ -43,10 +43,43 @@ enum Money {
         return "\(cents < 0 ? "−" : "")\(currency.symbol)\(whole).\(fractionText)"
     }
 
+    /// Like `format`, but drops ".00" for whole amounts: "$1,200", "$12.50".
+    static func short(_ cents: Int, currency: CurrencyCode) -> String {
+        if cents % 100 == 0 {
+            return "\(cents < 0 ? "−" : "")\(currency.symbol)\(grouped(cents.magnitude / 100))"
+        }
+        return format(cents, currency: currency)
+    }
+
+    /// "+$12.00" for income and "−$12.00" for expenses.
+    static func signed(_ cents: Int, kind: EntryKind, currency: CurrencyCode) -> String {
+        (kind == .income ? "+" : "−") + format(cents, currency: currency)
+    }
+
+    /// Compact chart labels: "$950", "$1.2k", "$3.4M".
+    static func compact(_ cents: Int, currency: CurrencyCode) -> String {
+        let sign = cents < 0 ? "−" : ""
+        let units = Double(cents.magnitude) / 100
+        func trimmed(_ value: Double) -> String {
+            let text = String(format: "%.1f", value)
+            return text.hasSuffix(".0") ? String(text.dropLast(2)) : text
+        }
+        if units >= 1_000_000 { return "\(sign)\(currency.symbol)\(trimmed(units / 1_000_000))M" }
+        if units >= 1_000 { return "\(sign)\(currency.symbol)\(trimmed(units / 1_000))k" }
+        return "\(sign)\(currency.symbol)\(Int(units.rounded()))"
+    }
+
     /// Plain editable form, e.g. 1234 -> "12.34".
     static func inputText(_ cents: Int) -> String {
         let fraction = cents % 100
         return "\(cents / 100).\(fraction < 10 ? "0" : "")\(fraction)"
+    }
+
+    /// Converts a decimal amount (from Siri/Shortcuts) to cents, or nil if out of range.
+    static func cents(fromDecimal amount: Double) -> Int? {
+        guard amount.isFinite, amount > 0, amount < 100_000_000 else { return nil }
+        let cents = Int((amount * 100).rounded())
+        return (1...maxCents).contains(cents) ? cents : nil
     }
 
     private static func grouped(_ value: UInt) -> String {

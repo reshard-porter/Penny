@@ -25,6 +25,7 @@ enum RecurringEngine {
                     category: rule.category,
                     date: rule.nextDate,
                     note: rule.note,
+                    isSample: rule.isSample,
                     ruleID: rule.id))
                 rule.generatedCount += 1
                 count += 1
@@ -35,4 +36,19 @@ enum RecurringEngine {
         if created > 0 { try? context.save() }
         return created
     }
+
+    /// Upcoming occurrences of all active rules between now and `days` ahead, soonest first.
+    static func upcoming(rules: [RecurringRule], days: Int = 30, now: Date = Date(),
+                         calendar: Calendar = .current) -> [UpcomingItem] {
+        let horizon = calendar.date(byAdding: .day, value: days, to: calendar.startOfDay(for: now)) ?? now
+        return rules
+            .flatMap { rule in rule.upcomingDates(through: horizon, limit: 8).map { UpcomingItem(rule: rule, date: $0) } }
+            .sorted { $0.date < $1.date }
+    }
+}
+
+struct UpcomingItem: Identifiable {
+    let rule: RecurringRule
+    let date: Date
+    var id: String { "\(rule.id.uuidString)-\(date.timeIntervalSince1970)" }
 }

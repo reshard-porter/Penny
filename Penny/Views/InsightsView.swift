@@ -4,8 +4,9 @@ import SwiftUI
 
 struct InsightsView: View {
     @Environment(AppState.self) private var state
-    @Query private var entries: [LedgerEntry]
+    @Query(sort: \LedgerEntry.date, order: .reverse) private var entries: [LedgerEntry]
     @Query private var budgets: [BudgetLimit]
+    @Query(filter: #Predicate<RecurringRule> { $0.isActive }) private var rules: [RecurringRule]
     @AppStorage("currency") private var currencyRaw = CurrencyCode.usd.rawValue
 
     private var currency: CurrencyCode { CurrencyCode(rawValue: currencyRaw) ?? .usd }
@@ -19,82 +20,104 @@ struct InsightsView: View {
             MonthSummary(month: calendar.month(offset: -back, from: state.selectedMonth),
                          allEntries: entries, budgets: budgets)
         }
+        let windowEnd = current.isCurrentMonth() ? Date() : calendar.endOfMonth(for: current.month)
 
-        ScrollView {
-            VStack(spacing: 16) {
-                MonthSwitcher()
-                ComparisonCard(current: current, previous: previous, currency: currency)
-                CategoryDonutCard(summary: current, currency: currency)
-                TrendCard(history: history, currency: currency)
-                PaceCard(summary: current, currency: currency)
-                if let top = current.rankedCategories.first {
-                    let share = Int((100 * Double(current.spent(top)) / Double(max(1, current.expenses))).rounded())
-                    HStack(alignment: .top, spacing: 14) {
-                        Image(systemName: top.symbol).font(.title2).foregroundStyle(Palette.blue)
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("Your largest category: \(top.label)").font(.headline).foregroundStyle(Palette.ink)
-                            Text("\(Money.format(current.spent(top), currency: currency)) makes up \(share)% of this month’s expenses. Category budgets help you compare this with your own plan.")
-                                .font(.subheadline).foregroundStyle(Palette.ink)
-                        }
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(spacing: 16) {
+                    MonthSwitcher()
+                    ScoreHero(current: current, previous: previous, currency: currency)
+                    CategoryDonutCard(summary: current, currency: currency)
+                    PaceCard(current: current, previous: previous, currency: currency)
+                        .id("more")
+                    TrendCard(history: history, currency: currency)
+                    WeekdayCard(values: InsightsMath.weekdayAverages(entries, endingAt: windowEnd), currency: currency)
+                    TopPlacesCard(merchants: InsightsMath.topMerchants(current.expenseEntries), currency: currency)
+                    if !current.expenseEntries.isEmpty {
+                        BiggestCard(entries: Array(current.expenseEntries.sorted { $0.amountCents > $1.amountCents }.prefix(3)),
+                                    currency: currency)
                     }
-                    .card(fill: Palette.paleBlue, bordered: false)
-                    .accessibilityElement(children: .combine)
+                    if !current.rankedIncomeCategories.isEmpty {
+                        IncomeCard(summary: current, currency: currency)
+                    }
+                    CommitmentsCard(rules: rules, income: max(current.income, previous.income), currency: currency)
+                        .id("end")
                 }
+                .padding(.horizontal)
+                .padding(.bottom, 40)
             }
-            .padding()
+            .screenshotScroll(proxy)
         }
-        .background(Palette.background)
+        .pennyBackground()
         .navigationTitle("Insights")
     }
 }
 
-// MARK: - Month comparison
+// MARK: - Score hero
 
-struct ComparisonCard: View {
+struct ScoreHero: View {
     let current: MonthSummary
     let previous: MonthSummary
     let currency: CurrencyCode
 
     var body: some View {
-        let delta = current.expenses - previous.expenses
-        let elapsed = current.elapsedDays(today: Date())
-        let average = elapsed == 0 ? 0 : current.expenses / elapsed
+        let rate = current.savingsRate
+        let change = InsightsMath.change(from: previous.expenses, to: current.expenses)
         let headline: String = {
-            if current.expenses == 0 { return "A fresh month of possibilities." }
-            if previous.expenses == 0 { return "Your spending story starts here." }
-            return delta <= 0 ? "A little more breathing room." : "A clearer view of your spending."
-        }()
-        let detail: String = {
-            guard previous.expenses > 0 else {
-                return "There are no expenses in the previous month to compare with yet."
-            }
-            let percent = Int((Double(abs(delta)) * 100 / Double(previous.expenses)).rounded())
-            return "You spent \(Money.format(abs(delta), currency: currency)) (\(percent)%) \(delta <= 0 ? "less" : "more") than in \(DateText.monthName(previous.month)). This compares the selected month so far with the previous full month."
+            guard current.expenses > 0 || current.income > 0 else { return "A fresh month awaits." }
+            guard let change else { return "Your money story starts here." }
+            if change <= -5 { return "Spending is down. Nice work." }
+            if change >= 5 { return "Spending is up this month." }
+            return "Steady as she goes."
         }()
 
-        VStack(alignment: .leading, spacing: 12) {
-            Text("THE BIGGER PICTURE")
-                .font(.caption2.weight(.bold)).tracking(1.4)
-                .foregroundStyle(Palette.blue)
-            Text(headline).font(.title2.weight(.heavy)).foregroundStyle(Palette.ink)
-            Text(detail).font(.subheadline).foregroundStyle(Palette.muted)
-            HStack(spacing: 24) {
-                number("Daily average", Money.format(average, currency: currency))
-                number("Expense entries", "\(current.expenseEntries.count)")
-                number("Net flow", Money.format(current.net, currency: currency))
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(alignment: .center, spacing: 18) {
+                ZStack {
+                    RingProgress(value: max(0, rate ?? 0), lineWidth: 12, track: Palette.heroTrack)
+                    VStack(spacing: 0) {
+                        Text(rate.map { "\(Int(($0 * 100).rounded()))%" } ?? "—")
+                            .font(Typography.money(24, weight: .heavy))
+                            .foregroundStyle(.white)
+                            .minimumScaleFactor(0.6)
+                        Text("saved").font(.caption2.weight(.semibold)).foregroundStyle(Palette.heroText)
+                    }
+                    .padding(8)
+                }
+                .frame(width: 100, height: 100)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Eyebrow(text: "\(DateText.monthName(current.month)) at a glance")
+                    Text(headline)
+                        .font(.title3.weight(.bold))
+                        .foregroundStyle(.white)
+                        .fixedSize(horizontal: false, vertical: true)
+                    if let change {
+                        Label("\(abs(change))% \(change <= 0 ? "less" : "more") than \(DateText.monthName(previous.month))",
+                              systemImage: change <= 0 ? "arrow.down.right" : "arrow.up.right")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(change <= 0 ? Palette.lime : Color(hex: 0xFFB4A8))
+                    }
+                }
             }
-            .padding(.top, 4)
+            HStack(spacing: 0) {
+                stat("Spent", Money.short(current.expenses, currency: currency))
+                Spacer()
+                stat("Earned", Money.short(current.income, currency: currency))
+                Spacer()
+                stat("Daily avg", Money.short(current.expenses / max(current.elapsedDays(today: Date()), 1), currency: currency))
+            }
         }
-        .card()
+        .heroCard()
+        .accessibilityElement(children: .combine)
     }
 
-    private func number(_ label: String, _ value: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.caption).foregroundStyle(Palette.muted)
-            Text(value).font(.headline.monospacedDigit()).foregroundStyle(Palette.ink)
-                .minimumScaleFactor(0.6).lineLimit(1)
+    private func stat(_ label: String, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label).font(.caption).foregroundStyle(Palette.heroFaint)
+            Text(value).font(Typography.money(17, weight: .bold)).foregroundStyle(.white)
+                .lineLimit(1).minimumScaleFactor(0.7)
         }
-        .accessibilityElement(children: .combine)
     }
 }
 
@@ -103,41 +126,65 @@ struct ComparisonCard: View {
 struct CategoryDonutCard: View {
     let summary: MonthSummary
     let currency: CurrencyCode
+    @State private var selectedAngle: Double?
+
+    private func category(at angle: Double?) -> LedgerCategory? {
+        guard let angle else { return nil }
+        var running = 0.0
+        for category in summary.rankedCategories {
+            running += Double(summary.spent(category)) / 100
+            if angle <= running { return category }
+        }
+        return nil
+    }
 
     var body: some View {
         let categories = summary.rankedCategories
-        VStack(alignment: .leading, spacing: 14) {
-            SectionTitle(title: "Spending mix", subtitle: "Share of this month’s expenses by category")
+        let selected = category(at: selectedAngle)
+        VStack(alignment: .leading, spacing: 16) {
+            SectionHeader(title: "Spending mix", subtitle: "Touch the ring to explore")
             if categories.isEmpty {
                 Text("No expenses this month yet.").font(.subheadline).foregroundStyle(Palette.muted)
             } else {
                 Chart(categories) { category in
                     SectorMark(angle: .value("Spent", Double(summary.spent(category)) / 100),
-                               innerRadius: .ratio(0.62),
-                               angularInset: 1.5)
-                        .cornerRadius(4)
-                        .foregroundStyle(category.color)
+                               innerRadius: .ratio(0.64),
+                               outerRadius: .ratio(selected == category ? 1 : 0.92),
+                               angularInset: 2)
+                        .cornerRadius(6)
+                        .foregroundStyle(Gradients.tint(category.color))
+                        .opacity(selected == nil || selected == category ? 1 : 0.35)
                         .accessibilityLabel(Text(category.label))
                         .accessibilityValue(Text(Money.format(summary.spent(category), currency: currency)))
                 }
+                .chartAngleSelection(value: $selectedAngle)
                 .chartBackground { _ in
                     VStack(spacing: 2) {
-                        Text("Total").font(.caption).foregroundStyle(Palette.muted)
-                        Text(Money.format(summary.expenses, currency: currency))
-                            .font(.headline.monospacedDigit()).foregroundStyle(Palette.ink)
+                        if let selected {
+                            Image(systemName: selected.symbol).foregroundStyle(selected.color)
+                            Text(selected.label).font(.caption.weight(.semibold)).foregroundStyle(Palette.muted)
+                            Text(Money.short(summary.spent(selected), currency: currency))
+                                .font(Typography.money(20, weight: .heavy)).foregroundStyle(Palette.ink)
+                            Text("\(share(selected))% of spending").font(.caption2).foregroundStyle(Palette.muted)
+                        } else {
+                            Text("Total").font(.caption.weight(.semibold)).foregroundStyle(Palette.muted)
+                            Text(Money.short(summary.expenses, currency: currency))
+                                .font(Typography.money(22, weight: .heavy)).foregroundStyle(Palette.ink)
+                            Text("\(categories.count) categories").font(.caption2).foregroundStyle(Palette.muted)
+                        }
                     }
                 }
-                .frame(height: 220)
+                .frame(height: 240)
+                .animation(.snappy, value: selected)
 
-                VStack(spacing: 8) {
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], alignment: .leading, spacing: 10) {
                     ForEach(categories) { category in
                         HStack(spacing: 8) {
-                            Circle().fill(category.color).frame(width: 10, height: 10)
-                            Text(category.label).font(.subheadline).foregroundStyle(Palette.ink)
-                            Spacer()
-                            Text(Money.format(summary.spent(category), currency: currency))
-                                .font(.subheadline.weight(.semibold).monospacedDigit())
-                                .foregroundStyle(Palette.ink)
+                            Circle().fill(category.color).frame(width: 9, height: 9)
+                            Text(category.label).font(.caption).foregroundStyle(Palette.ink).lineLimit(1)
+                            Spacer(minLength: 2)
+                            Text("\(share(category))%").font(.caption.weight(.semibold).monospacedDigit())
+                                .foregroundStyle(Palette.muted)
                         }
                         .accessibilityElement(children: .combine)
                     }
@@ -146,6 +193,114 @@ struct CategoryDonutCard: View {
         }
         .card()
     }
+
+    private func share(_ category: LedgerCategory) -> Int {
+        guard summary.expenses > 0 else { return 0 }
+        return Int((Double(summary.spent(category)) * 100 / Double(summary.expenses)).rounded())
+    }
+}
+
+// MARK: - Pace
+
+struct PaceCard: View {
+    let current: MonthSummary
+    let previous: MonthSummary
+    let currency: CurrencyCode
+
+    private struct Point: Identifiable {
+        let day: Int
+        let series: String
+        let amount: Double
+        var id: String { "\(series)-\(day)" }
+    }
+
+    var body: some View {
+        let elapsed = current.elapsedDays(today: Date())
+        let days = current.daysInMonth
+        let thisMonth = current.cumulativeSpending.prefix(elapsed).enumerated().map {
+            Point(day: $0.offset + 1, series: "This month", amount: Double($0.element) / 100)
+        }
+        let lastMonth = previous.cumulativeSpending.enumerated().map {
+            Point(day: $0.offset + 1, series: "Last month", amount: Double($0.element) / 100)
+        }.filter { $0.day <= days }
+        let plan: [Point] = current.hasBudget
+            ? [Point(day: 1, series: "Plan", amount: 0),
+               Point(day: days, series: "Plan", amount: Double(current.budget) / 100)]
+            : []
+        let lastAtSameDay = previous.cumulativeSpending.indices.contains(elapsed - 1)
+            ? previous.cumulativeSpending[elapsed - 1] : previous.expenses
+        let diff = current.expenses - lastAtSameDay
+
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Spending pace",
+                          subtitle: elapsed == 0 ? "This month hasn’t started yet."
+                          : (previous.expenses == 0 ? "Running total by day"
+                             : "\(Money.short(abs(diff), currency: currency)) \(diff <= 0 ? "less" : "more") than this point last month"))
+            Chart {
+                ForEach(thisMonth) { point in
+                    AreaMark(x: .value("Day", point.day), y: .value("Amount", point.amount))
+                        .foregroundStyle(LinearGradient(colors: [Palette.blue.opacity(0.35), Palette.blue.opacity(0.02)],
+                                                        startPoint: .top, endPoint: .bottom))
+                        .interpolationMethod(.monotone)
+                    LineMark(x: .value("Day", point.day), y: .value("Amount", point.amount),
+                             series: .value("Series", point.series))
+                        .foregroundStyle(Palette.blue)
+                        .lineStyle(StrokeStyle(lineWidth: 3, lineCap: .round))
+                        .interpolationMethod(.monotone)
+                }
+                ForEach(lastMonth) { point in
+                    LineMark(x: .value("Day", point.day), y: .value("Amount", point.amount),
+                             series: .value("Series", point.series))
+                        .foregroundStyle(Palette.faint)
+                        .lineStyle(StrokeStyle(lineWidth: 2, lineCap: .round))
+                        .interpolationMethod(.monotone)
+                }
+                ForEach(plan) { point in
+                    LineMark(x: .value("Day", point.day), y: .value("Amount", point.amount),
+                             series: .value("Series", point.series))
+                        .foregroundStyle(Palette.green)
+                        .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [5, 4]))
+                }
+                if let last = thisMonth.last {
+                    PointMark(x: .value("Day", last.day), y: .value("Amount", last.amount))
+                        .foregroundStyle(Palette.blue)
+                        .symbolSize(80)
+                }
+            }
+            .chartXScale(domain: 1...max(days, 2))
+            .chartXAxis {
+                AxisMarks(values: [1, 8, 15, 22, days]) { value in
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 3]))
+                    AxisValueLabel { if let day = value.as(Int.self) { Text("\(day)") } }
+                }
+            }
+            .chartYAxis {
+                AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) { value in
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 3]))
+                    AxisValueLabel {
+                        if let amount = value.as(Double.self) { Text(Money.compact(Int(amount * 100), currency: currency)) }
+                    }
+                }
+            }
+            .frame(height: 210)
+
+            HStack(spacing: 16) {
+                legend("This month", Palette.blue, dashed: false)
+                legend("Last month", Palette.faint, dashed: false)
+                if current.hasBudget { legend("Plan", Palette.green, dashed: true) }
+            }
+        }
+        .card()
+    }
+
+    private func legend(_ title: String, _ color: Color, dashed: Bool) -> some View {
+        HStack(spacing: 6) {
+            Capsule()
+                .stroke(color, style: StrokeStyle(lineWidth: 3, dash: dashed ? [3, 2] : []))
+                .frame(width: 16, height: 3)
+            Text(title).font(.caption).foregroundStyle(Palette.muted)
+        }
+    }
 }
 
 // MARK: - Six-month trend
@@ -153,6 +308,7 @@ struct CategoryDonutCard: View {
 struct TrendCard: View {
     let history: [MonthSummary]
     let currency: CurrencyCode
+    @State private var selectedMonth: Date?
 
     private struct Point: Identifiable {
         let month: Date
@@ -163,102 +319,236 @@ struct TrendCard: View {
 
     var body: some View {
         let points = history.flatMap { summary in
-            [Point(month: summary.month, series: "Expenses", cents: summary.expenses),
-             Point(month: summary.month, series: "Income", cents: summary.income)]
+            [Point(month: summary.month, series: "Income", cents: summary.income),
+             Point(month: summary.month, series: "Expenses", cents: summary.expenses)]
         }
+        let picked = selectedMonth.flatMap { date in
+            history.first { Calendar.current.isDate($0.month, equalTo: date, toGranularity: .month) }
+        }
+        let totalNet = history.reduce(0) { $0 + $1.net }
+
         VStack(alignment: .leading, spacing: 14) {
-            SectionTitle(title: "Six-month trend", subtitle: "Money in and out, month by month")
+            HStack(alignment: .top) {
+                SectionHeader(title: "Six-month trend",
+                              subtitle: picked.map { DateText.month($0.month) } ?? "Money in and out")
+                Spacer()
+                VStack(alignment: .trailing, spacing: 2) {
+                    Text(picked == nil ? "6-mo net" : "Net").font(.caption).foregroundStyle(Palette.muted)
+                    let net = picked?.net ?? totalNet
+                    Text((net >= 0 ? "+" : "") + Money.short(net, currency: currency))
+                        .font(Typography.money(16, weight: .bold))
+                        .foregroundStyle(net >= 0 ? Palette.green : Palette.red)
+                }
+            }
             Chart(points) { point in
                 BarMark(x: .value("Month", point.month, unit: .month),
                         y: .value("Amount", Double(point.cents) / 100))
                     .foregroundStyle(by: .value("Type", point.series))
                     .position(by: .value("Type", point.series))
-                    .cornerRadius(4)
+                    .cornerRadius(5)
+                    .opacity(picked == nil || Calendar.current.isDate(point.month, equalTo: picked?.month ?? .distantPast,
+                                                                       toGranularity: .month) ? 1 : 0.35)
             }
-            .chartForegroundStyleScale(["Expenses": Palette.blue, "Income": Palette.green])
+            .chartForegroundStyleScale(["Income": Palette.green, "Expenses": Palette.blue])
+            .chartXSelection(value: $selectedMonth)
             .chartXAxis {
                 AxisMarks(values: .stride(by: .month)) { _ in
                     AxisValueLabel(format: .dateTime.month(.abbreviated), centered: true)
                 }
             }
             .chartYAxis {
-                AxisMarks(position: .leading) { value in
-                    AxisGridLine()
+                AxisMarks(position: .trailing, values: .automatic(desiredCount: 4)) { value in
+                    AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 3]))
                     AxisValueLabel {
-                        if let amount = value.as(Double.self) { Text(compact(amount)) }
+                        if let amount = value.as(Double.self) { Text(Money.compact(Int(amount * 100), currency: currency)) }
                     }
                 }
             }
-            .chartLegend(position: .top, alignment: .leading)
+            .chartLegend(position: .bottom, alignment: .leading)
             .frame(height: 220)
         }
         .card()
     }
+}
 
-    private func compact(_ amount: Double) -> String {
-        if amount >= 1_000 { return "\(currency.symbol)\(Int(amount / 1_000))k" }
-        return "\(currency.symbol)\(Int(amount))"
+// MARK: - Weekday rhythm
+
+struct WeekdayCard: View {
+    let values: [InsightsMath.WeekdayValue]
+    let currency: CurrencyCode
+
+    var body: some View {
+        let peak = values.max { $0.averageCents < $1.averageCents }
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Weekly rhythm",
+                          subtitle: peak.map { $0.averageCents > 0
+                              ? "\(Calendar.current.weekdaySymbols[$0.weekday - 1])s are your biggest spending days"
+                              : "Average spending by weekday" } ?? "Average spending by weekday")
+            Chart(values) { value in
+                BarMark(x: .value("Day", value.label), y: .value("Average", Double(value.averageCents) / 100),
+                        width: .ratio(0.6))
+                    .foregroundStyle(value.weekday == peak?.weekday && (peak?.averageCents ?? 0) > 0
+                                     ? AnyShapeStyle(Gradients.tint(Color(hex: 0xEA580C)))
+                                     : AnyShapeStyle(Palette.blue.opacity(0.3)))
+                    .cornerRadius(6)
+                    .annotation(position: .top) {
+                        if value.weekday == peak?.weekday && value.averageCents > 0 {
+                            Text(Money.compact(value.averageCents, currency: currency))
+                                .font(.caption2.weight(.bold)).foregroundStyle(Color(hex: 0xEA580C))
+                        }
+                    }
+            }
+            .chartYAxis(.hidden)
+            .frame(height: 150)
+            Text("Average per day over the last 13 weeks.")
+                .font(.caption).foregroundStyle(Palette.muted)
+        }
+        .card()
     }
 }
 
-// MARK: - Budget pace
+// MARK: - Top places
 
-struct PaceCard: View {
+struct TopPlacesCard: View {
+    let merchants: [InsightsMath.Merchant]
+    let currency: CurrencyCode
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            SectionHeader(title: "Where you spend most", subtitle: "By description this month")
+            if merchants.isEmpty {
+                Text("Nothing to rank yet.").font(.subheadline).foregroundStyle(Palette.muted)
+            }
+            let top = merchants.first?.cents ?? 1
+            ForEach(Array(merchants.enumerated()), id: \.element.id) { index, merchant in
+                HStack(spacing: 12) {
+                    Text("\(index + 1)")
+                        .font(Typography.money(14, weight: .heavy))
+                        .foregroundStyle(index == 0 ? Palette.navy : Palette.muted)
+                        .frame(width: 28, height: 28)
+                        .background(index == 0 ? AnyShapeStyle(Gradients.lime) : AnyShapeStyle(Palette.surfaceRaised),
+                                    in: Circle())
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text(merchant.title).font(.subheadline.weight(.semibold)).foregroundStyle(Palette.ink)
+                                .lineLimit(1)
+                            if merchant.count > 1 {
+                                Text("×\(merchant.count)").font(.caption.weight(.semibold)).foregroundStyle(Palette.muted)
+                            }
+                            Spacer()
+                            Text(Money.format(merchant.cents, currency: currency))
+                                .font(Typography.money(15, weight: .bold)).foregroundStyle(Palette.ink)
+                        }
+                        ProgressBar(value: Double(merchant.cents) / Double(max(top, 1)),
+                                    tint: AnyShapeStyle(Gradients.tint(merchant.category.color)),
+                                    track: Palette.surfaceRaised, height: 5)
+                    }
+                }
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .card()
+    }
+}
+
+// MARK: - Biggest expenses
+
+struct BiggestCard: View {
+    @Environment(AppState.self) private var state
+    let entries: [LedgerEntry]
+    let currency: CurrencyCode
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            SectionHeader(title: "Biggest expenses", subtitle: nil)
+            ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                if index > 0 { Divider().padding(.leading, 58) }
+                Button { state.editor = .edit(entry) } label: { EntryRow(entry: entry, currency: currency) }
+                    .buttonStyle(PressableStyle(scale: 0.98))
+            }
+        }
+        .card()
+    }
+}
+
+// MARK: - Income sources
+
+struct IncomeCard: View {
     let summary: MonthSummary
     let currency: CurrencyCode
 
-    private struct Point: Identifiable {
-        let day: Int
-        let series: String
-        let amount: Double
-        var id: String { "\(series)-\(day)" }
-    }
-
-    private var lastDay: Int { summary.elapsedDays(today: Date()) }
-
-    private var points: [Point] {
-        let calendar = Calendar.current
-        let days = summary.daysInMonth
-        var running = 0
-        var result: [Point] = []
-        for day in 1...days {
-            let plan = Double(summary.budget) / 100 * Double(day) / Double(days)
-            result.append(Point(day: day, series: "Plan pace", amount: plan))
-            if day <= lastDay, let date = calendar.date(byAdding: .day, value: day - 1, to: summary.month) {
-                running += summary.spent(on: date)
-                result.append(Point(day: day, series: "Spent", amount: Double(running) / 100))
-            }
-        }
-        return result
-    }
-
     var body: some View {
-        let days = summary.daysInMonth
-        let onTrack = summary.expenses <= Int(Double(summary.budget) * Double(lastDay) / Double(max(days, 1)))
         VStack(alignment: .leading, spacing: 14) {
-            SectionTitle(title: "Budget pace",
-                         subtitle: lastDay == 0 ? "This month hasn’t started yet."
-                         : (onTrack ? "You’re at or under your plan’s pace." : "You’re spending faster than your plan."))
-            Chart(points) { point in
-                LineMark(x: .value("Day", point.day), y: .value("Amount", point.amount))
-                    .foregroundStyle(by: .value("Series", point.series))
-                    .lineStyle(StrokeStyle(lineWidth: point.series == "Spent" ? 3 : 2,
-                                           dash: point.series == "Spent" ? [] : [5, 4]))
-                    .interpolationMethod(.monotone)
-            }
-            .chartForegroundStyleScale(["Spent": Palette.blue, "Plan pace": Palette.muted])
-            .chartXScale(domain: 1...days)
-            .chartXAxisLabel("Day of month")
-            .chartYAxis {
-                AxisMarks(position: .leading) { value in
-                    AxisGridLine()
-                    AxisValueLabel {
-                        if let amount = value.as(Double.self) { Text("\(currency.symbol)\(Int(amount))") }
+            SectionHeader(title: "Income sources", subtitle: "\(Money.short(summary.income, currency: currency)) received")
+            GeometryReader { proxy in
+                HStack(spacing: 3) {
+                    ForEach(summary.rankedIncomeCategories) { category in
+                        let share = Double(summary.earned(category)) / Double(max(summary.income, 1))
+                        Rectangle()
+                            .fill(Gradients.tint(category.color))
+                            .frame(width: max(4, (proxy.size.width - 3 * CGFloat(summary.rankedIncomeCategories.count - 1)) * share))
                     }
                 }
+                .clipShape(Capsule())
             }
-            .chartLegend(position: .top, alignment: .leading)
-            .frame(height: 200)
+            .frame(height: 14)
+            ForEach(summary.rankedIncomeCategories) { category in
+                HStack(spacing: 10) {
+                    CategoryBadge(category: category, size: 32)
+                    Text(category.label).font(.subheadline.weight(.semibold)).foregroundStyle(Palette.ink)
+                    Spacer()
+                    Text(Money.format(summary.earned(category), currency: currency))
+                        .font(Typography.money(15, weight: .bold)).foregroundStyle(Palette.green)
+                }
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .card()
+    }
+}
+
+// MARK: - Recurring commitments
+
+struct CommitmentsCard: View {
+    let rules: [RecurringRule]
+    let income: Int
+    let currency: CurrencyCode
+
+    var body: some View {
+        let expenseRules = rules.filter { $0.kind == .expense }.sorted { $0.monthlyCents > $1.monthlyCents }
+        let monthly = expenseRules.reduce(0) { $0 + $1.monthlyCents }
+        let share = income > 0 ? Double(monthly) / Double(income) : nil
+
+        VStack(alignment: .leading, spacing: 14) {
+            SectionHeader(title: "Fixed commitments", subtitle: "Recurring expenses, per month")
+            HStack(alignment: .firstTextBaseline) {
+                Text(Money.short(monthly, currency: currency))
+                    .font(Typography.money(30, weight: .heavy)).foregroundStyle(Palette.ink)
+                Text("/ month").font(.subheadline).foregroundStyle(Palette.muted)
+                Spacer()
+                if let share {
+                    Text("\(Int((share * 100).rounded()))% of income")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(share > 0.6 ? Palette.orange : Palette.green)
+                        .padding(.horizontal, 10).padding(.vertical, 5)
+                        .background((share > 0.6 ? Palette.orange : Palette.green).opacity(0.12), in: Capsule())
+                }
+            }
+            if expenseRules.isEmpty {
+                Text("Add rent, subscriptions and bills as recurring to see them here.")
+                    .font(.subheadline).foregroundStyle(Palette.muted)
+            }
+            ForEach(expenseRules.prefix(5)) { rule in
+                HStack(spacing: 10) {
+                    CategoryBadge(category: rule.category, size: 30)
+                    Text(rule.title).font(.subheadline).foregroundStyle(Palette.ink).lineLimit(1)
+                    Text(rule.frequency.shortLabel).font(.caption).foregroundStyle(Palette.muted)
+                    Spacer()
+                    Text(Money.short(rule.monthlyCents, currency: currency))
+                        .font(Typography.money(14, weight: .semibold)).foregroundStyle(Palette.ink)
+                }
+                .accessibilityElement(children: .combine)
+            }
         }
         .card()
     }
