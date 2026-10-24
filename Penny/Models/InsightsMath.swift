@@ -12,20 +12,29 @@ enum InsightsMath {
 
     /// Expense descriptions ranked by total spent ("Fresh Market" ×4).
     static func topMerchants(_ entries: [LedgerEntry], limit: Int = 5) -> [Merchant] {
-        var totals: [String: (title: String, cents: Int, count: Int, category: LedgerCategory)] = [:]
+        struct Tally {
+            var title: String
+            var cents: Int
+            var count: Int
+            var category: LedgerCategory
+        }
+        var totals: [String: Tally] = [:]
         for entry in entries where entry.kind == .expense {
             let key = entry.title.trimmingCharacters(in: .whitespaces).lowercased()
-            guard !key.isEmpty else { continue }
-            var item = totals[key] ?? (entry.title, 0, 0, entry.category)
-            item.cents += entry.amountCents
-            item.count += 1
-            totals[key] = item
+            if key.isEmpty { continue }
+            var tally = totals[key] ?? Tally(title: entry.title, cents: 0, count: 0, category: entry.category)
+            tally.cents += entry.amountCents
+            tally.count += 1
+            totals[key] = tally
         }
-        return totals.values
-            .map { Merchant(title: $0.title, cents: $0.cents, count: $0.count, category: $0.category) }
-            .sorted { $0.cents == $1.cents ? $0.title < $1.title : $0.cents > $1.cents }
-            .prefix(limit)
-            .map { $0 }
+        let merchants: [Merchant] = totals.values.map { tally in
+            Merchant(title: tally.title, cents: tally.cents, count: tally.count, category: tally.category)
+        }
+        let ranked = merchants.sorted { lhs, rhs in
+            if lhs.cents == rhs.cents { return lhs.title < rhs.title }
+            return lhs.cents > rhs.cents
+        }
+        return Array(ranked.prefix(limit))
     }
 
     struct WeekdayValue: Identifiable, Equatable {

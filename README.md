@@ -1,53 +1,98 @@
-# Penny 2 — native iPhone expense tracker
+# Penny 3 — a beautiful money app for iPhone
 
-A brand-new Swift/SwiftUI version of Penny. Same idea and features as the Flutter app, rebuilt natively, plus Face ID lock, recurring transactions and richer charts. No Flutter, no CocoaPods, no extra installs — just Xcode.
+Penny is a native SwiftUI expense tracker, budget planner and savings-goal app. Everything stays on your iPhone — no account, no tracking.
 
-## Run it
+<p align="center">
+  <img src="docs/screenshots/light-1-overview.png" width="230" alt="Home">
+  <img src="docs/screenshots/dark-4-goals.png" width="230" alt="Goals">
+  <img src="docs/screenshots/light-5-insights.png" width="230" alt="Insights">
+</p>
 
-1. Unzip into a folder **outside** iCloud Drive, Desktop or Documents (for example `~/Developer/PennyNative`). iCloud adds hidden file attributes that make Xcode's code signing fail.
+## What's inside
+
+- **Home** — greeting, a glowing "left to spend" hero with a pace marker and a *safe-to-spend-per-day* figure, money in/out/net, a 7-day spending rhythm chart (touch a bar), upcoming bills, savings goals and top categories.
+- **Activity** — grouped by day with daily totals; search across this month or all time; quick filters (expenses, income, recurring, receipts) and categories; swipe to duplicate or delete with **Undo**; export CSV.
+- **Plan › Budgets** — a limit per category with progress, pace markers and "≈ $X/day" guidance; smart suggestions (last month, 3-month average, trim 10%); remove a budget from any month on; see spending that isn't budgeted yet.
+- **Plan › Goals** — savings goals with colors, icons and target dates; deposits and withdrawals with history; monthly amount needed and projected finish; confetti when you reach one 🎉.
+- **Insights** — savings rate, interactive spending-mix donut, cumulative pace vs last month and your plan, six-month trend, weekly rhythm, top places, biggest expenses, income sources and fixed commitments.
+- **Fast entry** — big amount pad, suggestions from your history (tap to fill description, category and amount), 19 colorful categories, Today/Yesterday chips, repeat weekly → yearly, notes and **receipt photos** (library or camera).
+- **Recurring** — rent, salary, subscriptions recorded automatically; pause, resume, edit; monthly cost summary.
+- **Siri & Shortcuts** — "Log an expense in Penny", "Log income in Penny", "How much have I spent in Penny", "New transaction in Penny".
+- **Reminders** — optional daily check-in and a heads-up the day before each bill.
+- **Personal touches** — light / dark / automatic theme, five home-screen icons (plus iOS 18 dark & tinted variants), 16 currencies, Face ID lock with privacy cover, haptics, onboarding tour.
+- Accessible: Dynamic Type, VoiceOver labels on rows, charts and progress.
+
+Amounts are stored as whole cents, so totals never drift. Penny 2 data upgrades automatically.
+
+## Run it in Xcode
+
+1. Unzip into a folder **outside** iCloud Drive, Desktop or Documents (for example `~/Developer/Penny`). iCloud adds hidden file attributes that make code signing fail.
 2. Double-click **Penny.xcodeproj**.
-3. At the top of Xcode, pick an iPhone simulator (e.g. *iPhone 17*) and press **⌘R**.
+3. Pick an iPhone simulator at the top of Xcode and press **⌘R**.
 
-**Requirements:** Xcode 16 or newer (the project uses Xcode 16's folder-synced format). The app runs on iOS 17 and later, iPhone and iPad.
+**Requirements:** Xcode 16 or newer (Xcode 26 recommended). Runs on iOS 17 and later, iPhone and iPad. No packages or CocoaPods.
 
-### On your own iPhone
+## Install on your iPhone
 
-1. In Xcode: select the **Penny** project → **Penny** target → **Signing & Capabilities** → choose your **Team** (add your Apple ID under Xcode → Settings → Accounts if needed). A free Apple ID works for your own device.
-2. If Xcode says the bundle ID is taken, change `com.reshardporter.penny` to something unique.
-3. Connect the iPhone, turn on **Settings → Privacy & Security → Developer Mode**, select it at the top of Xcode and press **⌘R**.
-4. Free Apple ID only: on the phone open **Settings → General → VPN & Device Management** and trust your developer certificate. Free installs expire after 7 days; press ⌘R again to refresh.
+1. In Xcode select the **Penny** project → **Penny** target → **Signing & Capabilities** → choose your **Team** (add your Apple ID under *Xcode → Settings → Accounts* if needed). A free Apple ID works.
+2. If Xcode says the bundle identifier isn't available, change `com.reshardporter.penny` to something unique, e.g. `com.yourname.penny`.
+3. Connect your iPhone with a cable, unlock it and tap **Trust**. On the iPhone turn on **Settings → Privacy & Security → Developer Mode** (it restarts).
+4. Select your iPhone at the top of Xcode and press **⌘R**.
+5. Free Apple ID only: on the iPhone open **Settings → General → VPN & Device Management**, tap your Apple ID and **Trust**. Free installs expire after 7 days — press ⌘R again to renew.
 
-### Run the tests
+## Get a signed .ipa
 
-Press **⌘U**. Tests cover exact-cents parsing and formatting, recurring schedules (no month-end drift), budget carry-forward and CSV formula neutralization.
+An .ipa can only be signed with *your* Apple certificate, so it's built on your Mac (or in GitHub with your secrets):
 
-## Features
+### Option A — one command on your Mac (free or paid Apple ID)
 
-- **Overview** — monthly plan hero (left to spend / over budget), money in, money out, net flow, last-7-days chart (touch and hold a bar), top categories and recent activity.
-- **Activity** — search descriptions, categories and notes; filter by type and category; swipe to delete with **Undo**; tap to edit; export the filtered list as CSV.
-- **Budgets** — a limit per expense category; a new limit applies from that month onward; zero-spend goals allowed; over-budget status shown with icon and text.
-- **Insights** — month-over-month comparison, daily average, spending-mix donut, six-month income vs expenses trend, and a budget-pace line.
-- **Recurring transactions** — choose *Repeat* when adding, or manage them in Settings › Recurring. Penny records due entries at launch and when you return to the app; pause, resume, edit or delete any series.
-- **Face ID / Touch ID / passcode lock** — Settings › Privacy. Locks when you leave the app and hides balances in the app switcher. In the Simulator, enable it via *Features → Face ID → Enrolled*.
-- **Settings** — USD, JMD, EUR or GBP labels (no conversion), export everything as CSV, remove sample data, clear transactions.
-- Light and dark mode; Dynamic Type; VoiceOver labels on rows, charts and progress.
+After running the app on your iPhone once (above), in Terminal:
 
-Data is stored on the device with SwiftData. Amounts are whole cents, so totals never drift. First launch shows labeled sample data; tap **Remove** on the banner to start fresh.
+```bash
+cd ~/Developer/Penny
+scripts/make-signed-ipa.sh                     # auto-detects your team
+# or: scripts/make-signed-ipa.sh YOURTEAMID com.yourname.penny --install
+```
+
+You get `build/Penny.ipa`, signed for your registered iPhone. `--install` installs it on the connected iPhone straight away. You can also drag the .ipa onto your iPhone in Finder or use Apple Configurator.
+
+### Option B — Xcode menus (paid developer account)
+
+*Product → Archive* → **Distribute App** → **Debugging** (or **Release Testing** for Ad Hoc) → **Export**.
+
+### Option C — GitHub Actions (paid developer account)
+
+Add the secrets listed at the top of `.github/workflows/signed-ipa.yml` (your .p12 certificate, its password, a provisioning profile and your Team ID), then run **Actions → Signed IPA → Run workflow**. Download `Penny-signed-ipa` from the run.
+
+### Option D — Sideloadly / AltStore (free Apple ID, Windows or Mac)
+
+Every push builds an unsigned IPA: download **Penny-unsigned.ipa** from the [latest-build release](../../releases/tag/latest-build) and open it in Sideloadly or AltStore — they sign it with your Apple ID as they install.
+
+## Tests
+
+Press **⌘U**. Swift Testing suites cover exact-cents parsing and formatting, recurring schedules (no month-end drift, biweekly and quarterly), budget carry-forward and removal, month summaries, goal math, insights (top places, weekday rhythm) and CSV formula neutralization.
 
 ## Project layout
 
 ```text
-Penny.xcodeproj               Xcode project (folder-synced: new files are picked up automatically)
-Penny/PennyApp.swift          App entry, tabs, lock overlay, undo toast, launch tasks
-Penny/Models/                 Ledger types, SwiftData models, money, summaries, budgets, CSV
-Penny/Support/                Theme, shared state, Face ID lock, recurring engine, sample data
-Penny/Views/                  Overview, Activity, Budgets, Insights, Settings, Recurring, forms
-Penny/Assets.xcassets         App icon and accent color
-PennyTests/                   Unit tests (Swift Testing)
+Penny.xcodeproj           Xcode project (folder-synced: new files are picked up automatically)
+Penny/PennyApp.swift      App entry, tabs, onboarding, global add sheet, toasts, confetti, lock
+Penny/Models/             Ledger types, SwiftData models, money, summaries, budgets, goals, insights, CSV
+Penny/Support/            Theme, app state & store, Face ID lock, recurring engine, reminders,
+                          Siri / Shortcuts intents, sample data
+Penny/Views/              Home, Activity, Plan (budgets + goals), Insights, Settings, entry form,
+                          recurring, receipts, onboarding, shared components
+Penny/Assets.xcassets     App icons (default + 4 alternates, dark & tinted), coin and logo art
+PennyTests/               Unit tests (Swift Testing)
+scripts/                  make-signed-ipa.sh, simulator screenshots, icon renderer
+.github/workflows/        Cloud build + tests + unsigned IPA; optional signed IPA
 ```
 
 ## Troubleshooting
 
 - **"Command CodeSign failed"** — run `xattr -cr .` inside the project folder, then *Product → Clean Build Folder* (⇧⌘K) and run again. Make sure the folder isn't in iCloud Drive.
-- **"Signing requires a development team"** — only for real devices; see *On your own iPhone* above. The simulator needs no team.
+- **"Signing requires a development team"** — only for real devices; see *Install on your iPhone*. The simulator needs no team.
+- **"Failed to register bundle identifier"** — change the bundle identifier to something unique.
+- **"Could not launch Penny … untrusted developer"** — trust your certificate on the iPhone (step 5 above).
 - **Project won't open / shows as unsupported** — update Xcode to version 16 or newer.
+- **Face ID in the Simulator** — *Features → Face ID → Enrolled*, then *Matching Face* when Penny asks.
